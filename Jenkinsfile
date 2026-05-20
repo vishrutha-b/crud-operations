@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Jenkinsfile — mirrors .github/workflows/ci-cd.yml
 // Stages: Quality → Test → Docker Build/Push → Trivy Scan
-// Runs on: main, develop branches
+// Credentials: DOCKER_HUB_USERNAME + DOCKER_HUB_TOKEN (Secret Text in Jenkins)
 // ─────────────────────────────────────────────────────────────────────────────
 
 pipeline {
@@ -10,8 +10,6 @@ pipeline {
     environment {
         PYTHON_VERSION = '3.9'
         IMAGE_NAME     = 'crud-api'
-        // NOTE: DOCKERHUB_CREDS is bound per-stage (not here) so a missing
-        // credential doesn't crash the entire pipeline before Stage 1 runs.
     }
 
     options {
@@ -103,28 +101,30 @@ pipeline {
                     not { changeRequest() }
                 }
             }
-            environment {
-                // Binds only in this stage — safe even if credential is missing
-                DOCKERHUB_CREDS = credentials('dockerhub-credentials')
-            }
             steps {
-                echo '── Logging in to Docker Hub ──'
-                sh 'echo $DOCKERHUB_CREDS_PSW | docker login -u $DOCKERHUB_CREDS_USR --password-stdin'
+                // Use the two separate Secret Text credentials from Jenkins
+                withCredentials([
+                    string(credentialsId: 'DOCKER_HUB_USERNAME', variable: 'DH_USER'),
+                    string(credentialsId: 'DOCKER_HUB_TOKEN',    variable: 'DH_TOKEN')
+                ]) {
+                    echo '── Logging in to Docker Hub ──'
+                    sh 'echo $DH_TOKEN | docker login -u $DH_USER --password-stdin'
 
-                echo '── Building Docker image ──'
-                sh """
-                    docker build \
-                        -t \$DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest \
-                        -t \$DOCKERHUB_CREDS_USR/${IMAGE_NAME}:sha-\$(echo ${GIT_COMMIT} | head -c 7) \
-                        .
-                """
+                    echo '── Building Docker image ──'
+                    sh """
+                        docker build \
+                            -t \$DH_USER/${IMAGE_NAME}:latest \
+                            -t \$DH_USER/${IMAGE_NAME}:sha-\$(echo ${GIT_COMMIT} | cut -c1-7) \
+                            .
+                    """
 
-                echo '── Pushing to Docker Hub ──'
-                sh """
-                    docker push \$DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest
-                    docker push \$DOCKERHUB_CREDS_USR/${IMAGE_NAME}:sha-\$(echo ${GIT_COMMIT} | head -c 7)
-                    echo '✅ Image pushed successfully!'
-                """
+                    echo '── Pushing to Docker Hub ──'
+                    sh """
+                        docker push \$DH_USER/${IMAGE_NAME}:latest
+                        docker push \$DH_USER/${IMAGE_NAME}:sha-\$(echo ${GIT_COMMIT} | cut -c1-7)
+                        echo '✅ Image pushed successfully!'
+                    """
+                }
             }
             post {
                 always {
@@ -143,52 +143,51 @@ pipeline {
                     not { changeRequest() }
                 }
             }
-            environment {
-                DOCKERHUB_CREDS = credentials('dockerhub-credentials')
-            }
             steps {
-                echo '── Pulling image for Trivy scan ──'
-                sh 'echo $DOCKERHUB_CREDS_PSW | docker login -u $DOCKERHUB_CREDS_USR --password-stdin'
-                sh 'docker pull $DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest'
+                withCredentials([
+                    string(credentialsId: 'DOCKER_HUB_USERNAME', variable: 'DH_USER'),
+                    string(credentialsId: 'DOCKER_HUB_TOKEN',    variable: 'DH_TOKEN')
+                ]) {
+                    echo '── Logging in & pulling image ──'
+                    sh 'echo $DH_TOKEN | docker login -u $DH_USER --password-stdin'
+                    sh 'docker pull $DH_USER/${IMAGE_NAME}:latest'
 
-                echo '── Running Trivy scan (table output) ──'
-                sh """
-                    docker run --rm \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v \$HOME/.cache/trivy:/root/.cache/trivy \
-                        aquasec/trivy:latest image \
-                        --severity CRITICAL,HIGH \
-                        --ignore-unfixed \
-                        --exit-code 0 \
-                        \$DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest
-                """
+                    echo '── Trivy scan (table output) ──'
+                    sh """
+                        docker run --rm \
+                            -v /var/run/docker.sock:/var/run/docker.sock \
+                            -v \$HOME/.cache/trivy:/root/.cache/trivy \
+                            aquasec/trivy:latest image \
+                            --severity CRITICAL,HIGH \
+                            --ignore-unfixed \
+                            --exit-code 0 \
+                            \$DH_USER/${IMAGE_NAME}:latest
+                    """
 
-                echo '── Running Trivy scan (JSON report) ──'
-                sh """
-                    docker run --rm \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v \$HOME/.cache/trivy:/root/.cache/trivy \
-                        aquasec/trivy:latest image \
-                        --severity CRITICAL,HIGH \
-                        --ignore-unfixed \
-                        --format json \
-                        --output trivy-results.json \
-                        \$DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest || true
-                """
+                    echo '── Trivy scan (JSON report) ──'
+                    sh """
+                        docker run --rm \
+                            -v /var/run/docker.sock:/var/run/docker.sock \
+                            -v \$HOME/.cache/trivy:/root/.cache/trivy \
+                            aquasec/trivy:latest image \
+                            --severity CRITICAL,HIGH \
+                            --ignore-unfixed \
+                            --format json \
+                            --output trivy-results.json \
+                            \$DH_USER/${IMAGE_NAME}:latest || true
+                    """
+                }
             }
             post {
                 always {
                     archiveArtifacts artifacts: 'trivy-results.json', allowEmptyArchive: true
                     sh 'docker logout || true'
-                    echo '── Trivy scan complete. Report archived. ──'
+                    echo '── Trivy scan complete ──'
                 }
             }
         }
     }
 
-    // ─────────────────────────────────────────────
-    // Pipeline-level post actions
-    // ─────────────────────────────────────────────
     post {
         success {
             echo '✅ Pipeline completed successfully!'
@@ -197,7 +196,6 @@ pipeline {
             echo '❌ Pipeline FAILED. Check the stage logs above.'
         }
         always {
-            // cleanWs() is safe in declarative post with agent any
             cleanWs()
         }
     }
