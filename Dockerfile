@@ -1,21 +1,37 @@
-FROM python:3.9-slim
+# ── Stage 1: Build ───────────────────────────────────────────
+FROM python:3.9-slim AS builder
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies for psycopg2
+# Install system dependencies for building (e.g., gcc for psycopg2)
 RUN apt-get update && apt-get install -y \
-    libpq-dev gcc \
+    libpq-dev \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install Python dependencies first (for layer caching)
+# Install dependencies into a specific folder to copy later
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --user --no-cache-dir -r requirements.txt
 
-# Copy application source
+
+# ── Stage 2: Runtime ─────────────────────────────────────────
+FROM python:3.9-slim AS runtime
+
+WORKDIR /app
+
+# Install only the runtime library for PostgreSQL
+RUN apt-get update && apt-get install -y \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only the installed packages from the builder stage
+COPY --from=builder /root/.local /root/.local
+# Copy the application source
 COPY . .
 
-# Expose port
+# Ensure the local bin folder is in the PATH
+ENV PATH=/root/.local/bin:$PATH
+
 EXPOSE 8000
 
 # Run with uvicorn
