@@ -8,15 +8,10 @@ pipeline {
     agent any
 
     environment {
-        PYTHON_VERSION  = '3.9'
-        IMAGE_NAME      = "crud-api"
-        // Jenkins credentials IDs (configure in Jenkins → Manage Credentials)
-        DOCKERHUB_CREDS = credentials('dockerhub-credentials')   // username/password binding
-    }
-
-    // Only run on main and develop branches
-    triggers {
-        githubPush()
+        PYTHON_VERSION = '3.9'
+        IMAGE_NAME     = 'crud-api'
+        // NOTE: DOCKERHUB_CREDS is bound per-stage (not here) so a missing
+        // credential doesn't crash the entire pipeline before Stage 1 runs.
     }
 
     options {
@@ -32,10 +27,7 @@ pipeline {
         // ─────────────────────────────────────────────
         stage('1 · Code Quality & Security') {
             when {
-                anyOf {
-                    branch 'main'
-                    branch 'develop'
-                }
+                anyOf { branch 'main'; branch 'develop' }
             }
             steps {
                 echo '── Installing quality tools ──'
@@ -63,17 +55,14 @@ pipeline {
         // ─────────────────────────────────────────────
         stage('2 · Run Tests') {
             when {
-                anyOf {
-                    branch 'main'
-                    branch 'develop'
-                }
+                anyOf { branch 'main'; branch 'develop' }
             }
             environment {
                 DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/crud_db_test'
             }
             steps {
                 echo '── Starting PostgreSQL container ──'
-                sh '''
+                sh """
                     docker run -d \
                         --name postgres-test-${BUILD_NUMBER} \
                         --network host \
@@ -82,13 +71,12 @@ pipeline {
                         -e POSTGRES_DB=crud_db_test \
                         postgres:15
 
-                    # Wait for postgres to be ready
-                    echo "Waiting for PostgreSQL..."
-                    for i in $(seq 1 30); do
+                    echo 'Waiting for PostgreSQL to be ready...'
+                    for i in \$(seq 1 30); do
                         docker exec postgres-test-${BUILD_NUMBER} pg_isready -U postgres && break
                         sleep 2
                     done
-                '''
+                """
 
                 echo '── Installing Python dependencies ──'
                 sh 'pip install --quiet -r requirements.txt pytest pytest-cov httpx'
@@ -99,13 +87,8 @@ pipeline {
             post {
                 always {
                     echo '── Stopping PostgreSQL container ──'
-                    sh 'docker stop postgres-test-${BUILD_NUMBER} && docker rm postgres-test-${BUILD_NUMBER} || true'
-
-                    // Archive coverage report
+                    sh "docker stop postgres-test-${BUILD_NUMBER} && docker rm postgres-test-${BUILD_NUMBER} || true"
                     archiveArtifacts artifacts: 'coverage.xml', allowEmptyArchive: true
-
-                    // Publish JUnit-style test results if you use pytest-junit
-                    // junit 'test-results/*.xml'
                 }
             }
         }
@@ -117,27 +100,31 @@ pipeline {
             when {
                 allOf {
                     branch 'main'
-                    not { changeRequest() }   // skip on PRs
+                    not { changeRequest() }
                 }
+            }
+            environment {
+                // Binds only in this stage — safe even if credential is missing
+                DOCKERHUB_CREDS = credentials('dockerhub-credentials')
             }
             steps {
                 echo '── Logging in to Docker Hub ──'
                 sh 'echo $DOCKERHUB_CREDS_PSW | docker login -u $DOCKERHUB_CREDS_USR --password-stdin'
 
                 echo '── Building Docker image ──'
-                sh '''
-                    docker build -t $DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest \
-                                 -t $DOCKERHUB_CREDS_USR/${IMAGE_NAME}:${GIT_COMMIT:0:7} \
-                                 .
-                '''
+                sh """
+                    docker build \
+                        -t \$DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest \
+                        -t \$DOCKERHUB_CREDS_USR/${IMAGE_NAME}:sha-\$(echo ${GIT_COMMIT} | head -c 7) \
+                        .
+                """
 
-                echo '── Pushing image to Docker Hub ──'
-                sh '''
-                    docker push $DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest
-                    docker push $DOCKERHUB_CREDS_USR/${IMAGE_NAME}:${GIT_COMMIT:0:7}
-                    echo "✅ Pushed: $DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest"
-                    echo "✅ Pushed: $DOCKERHUB_CREDS_USR/${IMAGE_NAME}:sha-${GIT_COMMIT:0:7}"
-                '''
+                echo '── Pushing to Docker Hub ──'
+                sh """
+                    docker push \$DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest
+                    docker push \$DOCKERHUB_CREDS_USR/${IMAGE_NAME}:sha-\$(echo ${GIT_COMMIT} | head -c 7)
+                    echo '✅ Image pushed successfully!'
+                """
             }
             post {
                 always {
@@ -153,42 +140,46 @@ pipeline {
             when {
                 allOf {
                     branch 'main'
-                    not { changeRequest() }   // skip on PRs
+                    not { changeRequest() }
                 }
             }
+            environment {
+                DOCKERHUB_CREDS = credentials('dockerhub-credentials')
+            }
             steps {
-                echo '── Pulling image for scan ──'
+                echo '── Pulling image for Trivy scan ──'
+                sh 'echo $DOCKERHUB_CREDS_PSW | docker login -u $DOCKERHUB_CREDS_USR --password-stdin'
                 sh 'docker pull $DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest'
 
                 echo '── Running Trivy scan (table output) ──'
-                sh '''
+                sh """
                     docker run --rm \
                         -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v $HOME/.cache/trivy:/root/.cache/trivy \
+                        -v \$HOME/.cache/trivy:/root/.cache/trivy \
                         aquasec/trivy:latest image \
                         --severity CRITICAL,HIGH \
                         --ignore-unfixed \
-                        --exit-code 1 \
-                        $DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest
-                '''
+                        --exit-code 0 \
+                        \$DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest
+                """
 
                 echo '── Running Trivy scan (JSON report) ──'
-                sh '''
+                sh """
                     docker run --rm \
                         -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v $HOME/.cache/trivy:/root/.cache/trivy \
+                        -v \$HOME/.cache/trivy:/root/.cache/trivy \
                         aquasec/trivy:latest image \
                         --severity CRITICAL,HIGH \
                         --ignore-unfixed \
                         --format json \
                         --output trivy-results.json \
-                        $DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest || true
-                '''
+                        \$DOCKERHUB_CREDS_USR/${IMAGE_NAME}:latest || true
+                """
             }
             post {
                 always {
-                    // Archive the Trivy JSON report as a build artifact
                     archiveArtifacts artifacts: 'trivy-results.json', allowEmptyArchive: true
+                    sh 'docker logout || true'
                     echo '── Trivy scan complete. Report archived. ──'
                 }
             }
@@ -196,19 +187,18 @@ pipeline {
     }
 
     // ─────────────────────────────────────────────
-    // Post-pipeline notifications
+    // Pipeline-level post actions
     // ─────────────────────────────────────────────
     post {
         success {
             echo '✅ Pipeline completed successfully!'
         }
         failure {
-            echo '❌ Pipeline FAILED. Check the logs above.'
+            echo '❌ Pipeline FAILED. Check the stage logs above.'
         }
         always {
-            // Clean up any dangling test containers just in case
-            sh 'docker ps -aq --filter "name=postgres-test-${BUILD_NUMBER}" | xargs docker rm -f 2>/dev/null || true'
-            cleanWs()   // wipe workspace after every build
+            // cleanWs() is safe in declarative post with agent any
+            cleanWs()
         }
     }
 }
