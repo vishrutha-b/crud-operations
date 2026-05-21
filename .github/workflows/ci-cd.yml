@@ -48,7 +48,7 @@ jobs:
         run: safety check --file requirements.txt -i 70612 -i 94066
 
   # ─────────────────────────────────────────────
-  # 2. Tests with PostgreSQL service container
+  # 2. Tests with PostgreSQL service container(checks database connectivity)
   # ─────────────────────────────────────────────
   test:
     name: Run Tests
