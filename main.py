@@ -1,5 +1,4 @@
 from fastapi import FastAPI
-import os
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import Base, engine
