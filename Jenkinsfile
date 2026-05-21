@@ -92,6 +92,34 @@ pipeline {
         }
 
         // ─────────────────────────────────────────────
+        // 2.5 SonarQube Analysis
+        // ─────────────────────────────────────────────
+        stage('2.5 · SonarQube Analysis') {
+            agent {
+                docker {
+                    image 'sonarsource/sonar-scanner-cli:latest'
+                    args '--user root'
+                }
+            }
+            when {
+                anyOf { branch 'main'; branch 'develop' }
+            }
+            steps {
+                withCredentials([
+                    string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN'),
+                    string(credentialsId: 'SONAR_HOST_URL', variable: 'SONAR_HOST_URL')
+                ]) {
+                    echo '── Running SonarQube Scanner ──'
+                    sh '''
+                        sonar-scanner \
+                            -Dsonar.host.url=$SONAR_HOST_URL \
+                            -Dsonar.token=$SONAR_TOKEN
+                    '''
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────
         // 3. Docker Build & Push to Docker Hub
         // ─────────────────────────────────────────────
         stage('3 · Docker Build & Push') {
