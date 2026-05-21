@@ -106,13 +106,12 @@ pipeline {
             }
             steps {
                 withCredentials([
-                    string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN'),
-                    string(credentialsId: 'SONAR_HOST_URL', variable: 'SONAR_HOST_URL')
+                    string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')
                 ]) {
                     echo '── Running SonarQube Scanner ──'
                     sh '''
                         sonar-scanner \
-                            -Dsonar.host.url=$SONAR_HOST_URL \
+                            -Dsonar.host.url=https://sonarcloud.io \
                             -Dsonar.token=$SONAR_TOKEN
                     '''
                 }
