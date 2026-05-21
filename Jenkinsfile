@@ -50,7 +50,7 @@ pipeline {
                 sh 'bandit -r . --exclude ./venv,./tests -ll'
 
                 echo '── CVE check with safety ──'
-                sh 'safety check --file requirements.txt --ignore 70612,94066'
+                sh 'safety check --file requirements.txt -i 70612 -i 94066'
             }
         }
 
